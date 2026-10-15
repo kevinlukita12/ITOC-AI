@@ -1,0 +1,268 @@
+@import "tailwindcss";
+
+/*
+ * ITOC brand tokens, sampled from the logo.
+ * Each one becomes a Tailwind utility: bg-itoc-blue, text-muted, border-line, etc.
+ */
+@theme {
+  --color-itoc-blue: #0168b3;      /* primary, the logo wordmark */
+  --color-itoc-blue-deep: #014f88; /* hover and pressed states */
+  --color-itoc-orange: #eb3d00;    /* accent only, the logo's people heads */
+  --color-ink: #102a3f;            /* body text */
+  --color-ink-soft: #1c3d57;
+  --color-muted: #5d7083;          /* secondary text */
+  --color-faint: #7a8b9c;          /* placeholders, disabled icons */
+  --color-line: #dce6ef;           /* borders */
+  --color-wash: #f2f7fb;           /* quiet surfaces */
+  --color-surface: #ffffff;        /* page and panel background */
+  --color-brand: #0168b3;          /* blue used for text, borders, and accents */
+}
+
+/* `dark:` utilities follow the data-theme attribute set in layout.tsx, not the OS setting. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Dark mode: a deep navy taken from the ink color, so it still reads as ITOC.
+ * Tailwind utilities read these variables, so bg-surface, text-ink, border-line,
+ * etc. all switch automatically. itoc-blue stays the same because it sits under
+ * white text (buttons, the user's messages); the lighter brand blue is for text on navy.
+ */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-surface: #0c1b29;
+  --color-wash: #13283b;
+  --color-line: #23405a;
+  --color-ink: #e3ecf4;
+  --color-ink-soft: #c3d3e1;
+  --color-muted: #96aabd;
+  --color-faint: #6d8599;
+  --color-brand: #5cb0f0;
+  --color-itoc-orange: #ff5a1f;
+}
+
+@theme inline {
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-itoc-blue) 20%, transparent);
+  }
+
+  /* One consistent keyboard focus ring for every control. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+/* Thin, quiet scrollbar for the conversation area. */
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+  scrollbar-gutter: stable;
+}
+
+.scroll-area::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+  border: 3px solid var(--color-surface);
+}
+
+/* ---------------------------------------------------------------
+ * Answer typography: styles the Markdown the model sends back.
+ * ------------------------------------------------------------- */
+.answer {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
+.answer > * + * {
+  margin-top: 0.85em;
+}
+
+.answer h1,
+.answer h2,
+.answer h3,
+.answer h4 {
+  color: var(--color-ink);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.answer h1 { font-size: 1.35em; margin-top: 1.4em; }
+.answer h2 { font-size: 1.2em;  margin-top: 1.4em; }
+.answer h3 { font-size: 1.05em; margin-top: 1.2em; }
+.answer h4 { font-size: 1em;    margin-top: 1.1em; }
+.answer > :first-child { margin-top: 0; }
+
+.answer strong {
+  font-weight: 700;
+}
+
+.answer a {
+  color: var(--color-brand);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.answer a:hover {
+  color: var(--color-itoc-blue-deep);
+}
+
+[data-theme="dark"] .answer a:hover {
+  color: #8fc8f5;
+}
+
+/* Tailwind's reset strips list styles, so bring them back. */
+.answer ul,
+.answer ol {
+  padding-left: 1.4em;
+}
+
+.answer ul { list-style: disc; }
+.answer ol { list-style: decimal; }
+.answer li + li { margin-top: 0.35em; }
+.answer li > ul,
+.answer li > ol { margin-top: 0.35em; }
+
+.answer li::marker {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+
+/* Quoted regulation text gets a calm, clearly separated block. */
+.answer blockquote {
+  border-left: 3px solid var(--color-brand);
+  background: var(--color-wash);
+  padding: 0.6em 1em;
+  border-radius: 0 8px 8px 0;
+  color: var(--color-ink-soft);
+}
+
+.answer code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--color-wash);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+}
+
+.answer pre {
+  background: #0e2235;
+  color: #e6eef6;
+  border-radius: 10px;
+  padding: 1em 1.1em;
+  overflow-x: auto;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+/* On the navy page the code block needs an edge to stay distinct. */
+[data-theme="dark"] .answer pre {
+  background: #07121d;
+  border: 1px solid var(--color-line);
+}
+
+.answer pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+.answer hr {
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  margin: 1.5em 0;
+}
+
+/* Wide tables scroll inside their own box instead of breaking the layout. */
+.answer .table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+}
+
+.answer table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.answer th {
+  background: var(--color-wash);
+  font-weight: 600;
+  text-align: left;
+}
+
+.answer th,
+.answer td {
+  padding: 0.55em 0.85em;
+  border-bottom: 1px solid var(--color-line);
+  vertical-align: top;
+}
+
+.answer tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Blinking caret at the end of an answer that is still being written. */
+.answer.is-streaming > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--color-brand);
+  border-radius: 2px;
+  animation: caret 1s steps(1) infinite;
+}
+
+@keyframes caret {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
