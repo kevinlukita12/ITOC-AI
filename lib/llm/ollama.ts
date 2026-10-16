@@ -1,5 +1,5 @@
 import { RAG_CONFIG } from '../rag/config';
-import { OllamaError, ollamaErrorMessage, ollamaPost } from './http';
+import { OllamaError, ollamaErrorMessage, ollamaGet, ollamaPost } from './http';
 
 /**
  * Klien kecil untuk API native Ollama (`/api/chat`).
@@ -130,5 +130,21 @@ export async function warmUpModels(): Promise<void> {
     );
   } catch (err) {
     console.warn(`[ITOC AI] Pemanasan model gagal: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Apakah model chat sudah ada di memori? Kalau belum, pertanyaan ini harus menunggu
+ * model dimuat dulu, dan halaman chat memberi tahu pengguna.
+ */
+export async function isChatModelLoaded(): Promise<boolean> {
+  try {
+    const res = await ollamaGet('/api/ps');
+    if (res.status !== 200) return true;
+    const { models } = JSON.parse(await res.text()) as { models?: Array<{ name: string }> };
+    const want = RAG_CONFIG.chatModel.includes(':') ? RAG_CONFIG.chatModel : `${RAG_CONFIG.chatModel}:latest`;
+    return (models ?? []).some((m) => m.name === want || m.name === RAG_CONFIG.chatModel);
+  } catch {
+    return true; // tidak tahu, jangan tampilkan peringatan
   }
 }

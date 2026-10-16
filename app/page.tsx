@@ -7,7 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import itocLogo from 'app/images/itoc-logo-white.png';
 import ThemeToggle from './theme-toggle';
-import type { AnswerTiming, SourceRef } from '@/lib/rag/types';
+import type { AnswerTiming, ProgressUpdate, SourceRef } from '@/lib/rag/types';
 
 const STARTER_QUESTIONS = [
   'Which POJK rules cover IT governance at securities companies?',
@@ -182,15 +182,171 @@ function formatDuration(ms: number): string {
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
 }
 
-/** Counts seconds while waiting for the first words, so a slow model doesn't look frozen. */
-function ElapsedTime() {
-  const [start] = useState(() => Date.now());
-  const [now, setNow] = useState(start);
+/** Re-renders every second, for live elapsed-time displays. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  return <span className="tabular-nums">{formatDuration(now - start)}</span>;
+  return now;
+}
+
+// How long earlier questions took until the first words appeared, kept in this browser
+// so the progress bar can estimate how long the current one will take.
+const WAIT_HISTORY_KEY = 'itoc-ai:first-word-ms';
+
+function readWaitEstimate(): number | null {
+  try {
+    const list = JSON.parse(localStorage.getItem(WAIT_HISTORY_KEY) ?? '[]') as number[];
+    if (!list.length) return null;
+    const sorted = [...list].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)]; // median: one slow first question won't skew it
+  } catch {
+    return null;
+  }
+}
+
+function recordWait(ms: number): number | null {
+  try {
+    const list = JSON.parse(localStorage.getItem(WAIT_HISTORY_KEY) ?? '[]') as number[];
+    localStorage.setItem(WAIT_HISTORY_KEY, JSON.stringify([...list, ms].slice(-5)));
+  } catch {
+    // storage unavailable: the estimate simply stays at its default
+  }
+  return readWaitEstimate();
+}
+
+const STAGES = ['searching', 'reading', 'writing'] as const;
+
+/** Current time, for event handlers (not render) to stamp when a question was sent. */
+function timestampNow(): number {
+  return Date.now();
+}
+
+function StepIcon({ state }: { state: 'done' | 'active' | 'pending' }) {
+  if (state === 'done') {
+    return (
+      <svg className="w-4 h-4 shrink-0 text-brand" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="7" fill="currentColor" opacity="0.15" />
+        <path d="M5 8.2l2 2 4-4.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (state === 'active') {
+    return (
+      <svg className="w-4 h-4 shrink-0 text-brand animate-spin" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+        <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="w-4 h-4 shrink-0 text-faint" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/**
+ * Shown from the moment a question is sent until the first words of the answer appear,
+ * which on a laptop without a GPU can take minutes. The steps say what the AI is doing,
+ * the bar estimates how far along it is, and the shimmer shows it is still alive.
+ */
+function ProgressPanel({
+  progress,
+  startedAt,
+  estimateMs,
+}: {
+  progress: ProgressUpdate;
+  startedAt: number;
+  estimateMs: number | null;
+}) {
+  const now = useNow();
+  const elapsed = Math.max(0, now - startedAt);
+  const est = Math.max(estimateMs ?? 60_000, 5_000);
+
+  // Eases toward 92% and never reaches the end on its own: the bar only completes when
+  // the answer actually starts, so it never claims to be done while the AI is still working.
+  let pct = 92 * (1 - Math.exp((-2 * elapsed) / est));
+  if (progress.stage === 'searching') pct = Math.min(pct, 10);
+  pct = Math.max(pct, 3);
+
+  const current = STAGES.indexOf(progress.stage);
+  const stateOf = (i: number) => (i < current ? 'done' : i === current ? 'active' : 'pending');
+
+  const readingLabel =
+    progress.stage === 'reading' && progress.excerpts > 0
+      ? `Reading ${progress.excerpts} relevant excerpt${progress.excerpts === 1 ? '' : 's'}`
+      : 'Reading the relevant excerpts';
+
+  const slow = elapsed > est * 1.5 && elapsed > 20_000;
+  const hint = slow
+    ? 'Taking longer than usual. Still working; you can stop anytime.'
+    : estimateMs === null
+      ? 'The first question can take a few minutes.'
+      : `Usually about ${formatDuration(est)}`;
+
+  return (
+    <div className="flex gap-3 md:gap-4" role="status" aria-live="polite">
+      <AssistantAvatar animated />
+      <div className="flex-1 min-w-0 pt-1.5 max-w-md">
+        <div className="text-sm font-bold text-brand mb-2">ITOC AI</div>
+        <ol className="space-y-1.5 text-sm">
+          <li className="flex items-center gap-2">
+            <StepIcon state={stateOf(0)} />
+            <span className={stateOf(0) === 'pending' ? 'text-faint' : 'text-ink'}>Searching the documents</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="mt-0.5">
+              <StepIcon state={stateOf(1)} />
+            </span>
+            <span>
+              <span className={stateOf(1) === 'pending' ? 'text-faint' : 'text-ink'}>{readingLabel}</span>
+              {progress.stage === 'reading' && progress.loadingModel && (
+                <span className="block text-xs text-muted mt-0.5">
+                  Loading the AI model first. This takes longer on the first question.
+                </span>
+              )}
+            </span>
+          </li>
+          <li className="flex items-center gap-2">
+            <StepIcon state={stateOf(2)} />
+            <span className={stateOf(2) === 'pending' ? 'text-faint' : 'text-ink'}>Writing the answer</span>
+          </li>
+        </ol>
+
+        <div
+          className="mt-3 h-1.5 rounded-full bg-wash overflow-hidden"
+          role="progressbar"
+          aria-label="Estimated progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(pct)}
+        >
+          <div
+            className="progress-fill h-full rounded-full bg-itoc-blue transition-[width] duration-1000 ease-linear"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <div className="mt-1.5 flex justify-between gap-3 text-xs text-muted">
+          <span className="tabular-nums">{formatDuration(elapsed)}</span>
+          <span className={`text-right ${slow ? 'text-ink' : ''}`}>{hint}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Under an answer that is still being written: shows it isn't finished yet. */
+function WritingIndicator({ startedAt }: { startedAt: number }) {
+  const now = useNow();
+  return (
+    <div className="mt-2 flex items-center gap-2 text-xs text-muted" role="status">
+      <span className="w-1.5 h-1.5 rounded-full bg-itoc-blue animate-pulse" aria-hidden="true" />
+      Writing the answer… <span className="tabular-nums">{formatDuration(Math.max(0, now - startedAt))}</span>
+    </div>
+  );
 }
 
 function getSources(m: { metadata?: unknown }): SourceRef[] {
@@ -211,8 +367,30 @@ function getText(m: { parts?: Array<{ type: string; text?: string }> }): string 
 
 export default function ITOCAIPage() {
   const [input, setInput] = useState('');
+  const [progress, setProgress] = useState<ProgressUpdate>({ stage: 'searching' });
+  const [waitStartedAt, setWaitStartedAt] = useState(0);
+  const [waitEstimate, setWaitEstimate] = useState<number | null>(() =>
+    typeof window === 'undefined' ? null : readWaitEstimate(),
+  );
+
   const { messages, sendMessage, status, stop, setMessages, error, regenerate, clearError } =
-    useChat({ id: 'itoc-ai' });
+    useChat({
+      id: 'itoc-ai',
+      // Live stages from the server ("searching", "reading", "writing").
+      onData: (part) => {
+        if (part.type === 'data-progress') setProgress(part.data as ProgressUpdate);
+      },
+      // Remember how long the first words took, to estimate the next wait.
+      onFinish: ({ message }) => {
+        const ms = getTiming(message)?.firstTokenMs;
+        if (ms) setWaitEstimate(recordWait(ms));
+      },
+    });
+
+  const beginWait = () => {
+    setProgress({ stage: 'searching' });
+    setWaitStartedAt(timestampNow());
+  };
 
   const scrollRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -221,6 +399,10 @@ export default function ITOCAIPage() {
 
   const isThinking = status === 'submitted' || status === 'streaming';
   const lastMessage = messages[messages.length - 1];
+  // Still waiting for the first words: the request is out, or the answer has started but is empty.
+  const waitingForWords =
+    status === 'submitted' ||
+    (status === 'streaming' && lastMessage?.role === 'assistant' && !getText(lastMessage));
 
   // Follow the answer as it streams, but only if the reader hasn't scrolled up to re-read.
   useEffect(() => {
@@ -265,6 +447,7 @@ export default function ITOCAIPage() {
     if (!text.trim() || isThinking) return;
     if (error) clearError();
     stickToBottom.current = true;
+    beginWait();
     sendMessage({ role: 'user', parts: [{ type: 'text', text: text.trim() }] });
     setInput('');
   };
@@ -389,6 +572,7 @@ export default function ITOCAIPage() {
                 }
 
                 const isLive = status === 'streaming' && m.id === lastMessage?.id;
+                if (!text) return null; // the progress panel below covers the wait
 
                 return (
                   <article key={m.id} className="flex gap-3 md:gap-4" aria-busy={isLive}>
@@ -396,6 +580,7 @@ export default function ITOCAIPage() {
                     <div className="flex-1 min-w-0 pt-1.5">
                       <div className="text-sm font-bold text-brand mb-1.5">ITOC AI</div>
                       <Answer text={text} streaming={isLive} />
+                      {isLive && <WritingIndicator startedAt={waitStartedAt} />}
                       {text && getSources(m).length > 0 && <Sources sources={getSources(m)} />}
                       {!isLive && text && (
                         <div className="mt-3 flex items-center gap-3">
@@ -415,14 +600,9 @@ export default function ITOCAIPage() {
                 );
               })}
 
-              {/* Waiting for the first token */}
-              {status === 'submitted' && (
-                <div className="flex gap-3 md:gap-4 items-center" role="status">
-                  <AssistantAvatar animated />
-                  <span className="text-sm text-muted">
-                    Looking through the regulations… <ElapsedTime />
-                  </span>
-                </div>
+              {/* Waiting for the first words: steps + estimated progress */}
+              {waitingForWords && !error && (
+                <ProgressPanel progress={progress} startedAt={waitStartedAt} estimateMs={waitEstimate} />
               )}
 
               {error && (
@@ -440,6 +620,7 @@ export default function ITOCAIPage() {
                     onClick={() => {
                       clearError();
                       stickToBottom.current = true;
+                      beginWait();
                       regenerate();
                     }}
                     className="shrink-0 self-start sm:self-auto text-sm font-semibold text-white bg-itoc-blue hover:bg-itoc-blue-deep px-3 py-1.5 rounded-lg transition-colors"

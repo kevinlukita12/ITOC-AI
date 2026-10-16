@@ -17,3 +17,14 @@ export interface AnswerTiming {
   answerTokens: number;
   tokensPerSec: number;
 }
+
+/**
+ * Tahapan menjawab, dikirim ke browser selama menunggu supaya pengguna tahu AI masih bekerja.
+ * - searching : mencari potongan dokumen yang relevan
+ * - reading   : model membaca potongan dokumen (paling lama sebelum kata pertama)
+ * - writing   : model mulai menulis jawaban
+ */
+export type ProgressUpdate =
+  | { stage: 'searching' }
+  | { stage: 'reading'; excerpts: number; loadingModel: boolean }
+  | { stage: 'writing' };

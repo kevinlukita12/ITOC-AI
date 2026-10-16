@@ -1,10 +1,10 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
-import { streamChat, type ChatTurn, type OllamaStats } from '@/lib/llm/ollama';
+import { isChatModelLoaded, streamChat, type ChatTurn, type OllamaStats } from '@/lib/llm/ollama';
 import { RAG_CONFIG } from '@/lib/rag/config';
 import { embedQuery } from '@/lib/rag/embed';
 import { hybridSearch, type SearchHit } from '@/lib/rag/search';
 import { loadIndex } from '@/lib/rag/store';
-import type { AnswerTiming, SourceRef } from '@/lib/rag/types';
+import type { AnswerTiming, ProgressUpdate, SourceRef } from '@/lib/rag/types';
 
 type IncomingMessage = {
     role: string;
@@ -103,59 +103,65 @@ export async function POST(req: Request) {
 
     const question = turns[turns.length - 1]?.content ?? '';
 
-    // 1) Cari potongan dokumen yang relevan.
-    const index = await loadIndex();
-    let hits: SearchHit[] = [];
-
-    if (index && index.chunks.length) {
-        const query = buildRetrievalQuery(turns);
-        let queryVector: Float32Array;
-        try {
-            queryVector = await embedQuery(query);
-        } catch (err) {
-            // Tanpa embedding, pencarian kata kunci (BM25) tetap jalan.
-            console.error('[ITOC AI] Embedding pertanyaan gagal, pakai pencarian kata kunci saja:', err);
-            queryVector = new Float32Array(index.chunks[0].vector.length);
-        }
-        hits = hybridSearch(index, query, queryVector, {
-            topK: RAG_CONFIG.topK,
-            maxChars: RAG_CONFIG.maxContextChars,
-        });
-    }
-    const retrievalMs = Date.now() - started;
-
-    const sources: SourceRef[] = hits.map((h, i) => ({
-        n: i + 1,
-        title: h.chunk.title,
-        file: h.chunk.file,
-        heading: h.chunk.heading,
-        pageStart: h.chunk.pageStart,
-        pageEnd: h.chunk.pageEnd,
-    }));
-
-    // 2) Susun pesan: riwayat singkat + pertanyaan terakhir beserta potongan dokumen.
-    const history: ChatTurn[] = turns
-        .slice(0, -1)
-        .slice(-RAG_CONFIG.historyMessages)
-        .map((m) =>
-            m.role === 'assistant' && m.content.length > RAG_CONFIG.historyAnswerChars
-                ? { ...m, content: `${m.content.slice(0, RAG_CONFIG.historyAnswerChars)}…` }
-                : m,
-        );
-
-    const llmMessages: ChatTurn[] = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...history,
-        { role: 'user', content: buildQuestionWithExcerpts(question, hits, Boolean(index?.chunks.length)) },
-    ];
-
-    // 3) Alirkan jawaban ke browser.
     const stream = createUIMessageStream({
         onError: (err) =>
             err instanceof Error ? err.message : 'Terjadi kesalahan saat menghubungi AI.',
         execute: async ({ writer }) => {
+            // Tahapan dikirim ke browser sebagai "transient" data: hanya untuk tampilan progres,
+            // tidak disimpan di riwayat chat.
+            const progress = (data: ProgressUpdate) =>
+                writer.write({ type: 'data-progress', data, transient: true });
+
+            // 1) Cari potongan dokumen yang relevan.
+            progress({ stage: 'searching' });
+            const index = await loadIndex();
+            let hits: SearchHit[] = [];
+
+            if (index && index.chunks.length) {
+                const query = buildRetrievalQuery(turns);
+                let queryVector: Float32Array;
+                try {
+                    queryVector = await embedQuery(query);
+                } catch (err) {
+                    // Tanpa embedding, pencarian kata kunci (BM25) tetap jalan.
+                    console.error('[ITOC AI] Embedding pertanyaan gagal, pakai pencarian kata kunci saja:', err);
+                    queryVector = new Float32Array(index.chunks[0].vector.length);
+                }
+                hits = hybridSearch(index, query, queryVector, {
+                    topK: RAG_CONFIG.topK,
+                    maxChars: RAG_CONFIG.maxContextChars,
+                });
+            }
+            const retrievalMs = Date.now() - started;
+
+            const sources: SourceRef[] = hits.map((h, i) => ({
+                n: i + 1,
+                title: h.chunk.title,
+                file: h.chunk.file,
+                heading: h.chunk.heading,
+                pageStart: h.chunk.pageStart,
+                pageEnd: h.chunk.pageEnd,
+            }));
             writer.write({ type: 'start', messageMetadata: { sources } });
-            writer.write({ type: 'text-start', id: 'answer' });
+
+            // 2) Susun pesan: riwayat singkat + pertanyaan terakhir beserta potongan dokumen.
+            const history: ChatTurn[] = turns
+                .slice(0, -1)
+                .slice(-RAG_CONFIG.historyMessages)
+                .map((m) =>
+                    m.role === 'assistant' && m.content.length > RAG_CONFIG.historyAnswerChars
+                        ? { ...m, content: `${m.content.slice(0, RAG_CONFIG.historyAnswerChars)}…` }
+                        : m,
+                );
+
+            const llmMessages: ChatTurn[] = [
+                { role: 'system', content: SYSTEM_PROMPT },
+                ...history,
+                { role: 'user', content: buildQuestionWithExcerpts(question, hits, Boolean(index?.chunks.length)) },
+            ];
+
+            // 3) Model membaca potongan dokumen. Bagian ini yang paling lama sebelum kata pertama muncul.
+            progress({ stage: 'reading', excerpts: hits.length, loadingModel: !(await isChatModelLoaded()) });
 
             let firstTokenMs = 0;
             let stats: OllamaStats = {};
@@ -163,14 +169,18 @@ export async function POST(req: Request) {
             // req.signal: tombol Stop di browser ikut menghentikan Ollama, jadi tidak membuang waktu.
             for await (const ev of streamChat(llmMessages, req.signal)) {
                 if (ev.type === 'delta') {
-                    if (!firstTokenMs) firstTokenMs = Date.now() - started;
+                    if (!firstTokenMs) {
+                        firstTokenMs = Date.now() - started;
+                        progress({ stage: 'writing' });
+                        writer.write({ type: 'text-start', id: 'answer' });
+                    }
                     writer.write({ type: 'text-delta', id: 'answer', delta: ev.text });
                 } else {
                     stats = ev.stats;
                 }
             }
 
-            writer.write({ type: 'text-end', id: 'answer' });
+            if (firstTokenMs) writer.write({ type: 'text-end', id: 'answer' });
 
             const timing: AnswerTiming = {
                 totalMs: Date.now() - started,
