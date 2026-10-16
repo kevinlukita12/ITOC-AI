@@ -10,10 +10,10 @@ tepat di halaman yang dikutip.
 
 1. `npm run ingest` membaca semua PDF di `DokumenPedoman/`, memotongnya per Pasal/bagian, lalu
    membuat "embedding" (representasi makna) dengan model `bge-m3` di Ollama. Hasilnya disimpan di
-   `data/rag-index.json`.
+   `data/rag-index.json`. Ini tidak perlu di lakukan berkali-kali, hanya saat ada dokumen baru saja.
 2. Saat member bertanya, server mencari potongan yang paling relevan dengan dua cara sekaligus:
    berdasarkan makna (embedding) dan kata kunci persis (mis. "Pasal 12", "RTO", "POJK 11/2022").
-3. Potongan terbaik (default 4) diberikan ke model chat (`qwen2.5:14b`) beserta instruksi untuk
+3. Potongan terbaik (default 4) diberikan ke model chat (`qwen2.5:7b`) beserta instruksi untuk
    menjawab hanya dari dokumen dan mencantumkan nomor sumber, mis. [1], [2].
 
 ## Yang perlu di-install
@@ -22,7 +22,7 @@ tepat di halaman yang dikutip.
 | --- | --- | --- |
 | **Node.js** (versi LTS) | Wajib | Menjalankan aplikasi. `npm` otomatis ikut terpasang bersama Node.js. |
 | **Ollama** | Wajib | Menjalankan model AI di komputer sendiri, tanpa internet dan tanpa biaya API. |
-| Model **qwen2.5:14b** dan **bge-m3** | Wajib | Model chat dan model pembaca dokumen. Diunduh lewat Ollama. |
+| Model **qwen2.5:7b** dan **bge-m3** | Wajib | Model chat dan model pembaca dokumen. Diunduh lewat Ollama. |
 | Next.js, AI SDK, tsx, unpdf | Tidak perlu di-install manual | Semuanya otomatis terpasang saat menjalankan `npm install` (langkah 4). |
 | VS Code | Opsional | Hanya kalau ingin mengedit kode. Tidak dibutuhkan untuk menjalankan aplikasi. |
 | Git | Opsional | Hanya kalau proyek disimpan di GitHub/GitLab. |
@@ -67,13 +67,13 @@ ollama --version
 Butuh koneksi internet. Total unduhan sekitar 6 GB, jadi bisa makan waktu.
 
 ```powershell
-ollama pull qwen2.5:14b
+ollama pull qwen2.5:7b
 ollama pull bge-m3
 ```
 
 Cek hasilnya dengan `ollama list`. Kedua model harus muncul di daftar.
 
-Model `qwen2.5:14b` adalah pilihan seimbang antara kecepatan dan kualitas. Kalau komputer kuat
+Model `qwen2.5:7b` adalah pilihan seimbang antara kecepatan dan kualitas. Kalau komputer kuat
 (GPU NVIDIA dengan VRAM 12 GB ke atas), `qwen2.5:14b` memberi jawaban lebih baik. Kalau komputer
 lemah, `qwen2.5:3b` lebih cepat.
 
@@ -97,7 +97,7 @@ copy .env.example .env.local
 ```
 
 4. Buka `.env.local` dengan Notepad dan pastikan `AI_MODEL_NAME` sama dengan model yang
-   diunduh di langkah 3, misalnya `AI_MODEL_NAME=qwen2.5:14b`.
+   diunduh di langkah 3, misalnya `AI_MODEL_NAME=qwen2.5:7b`.
 
 Context window Ollama tidak perlu diatur, karena aplikasi sudah mengirim `num_ctx` (default 8192)
 di setiap permintaan. Kalau sebelumnya Anda men-set `OLLAMA_CONTEXT_LENGTH=16384`, sebaiknya
@@ -214,7 +214,7 @@ Salin `.env.example` menjadi `.env.local` lalu ubah sesuai kebutuhan:
 | Variabel | Default | Keterangan |
 | --- | --- | --- |
 | `AI_BASE_URL` | `http://localhost:11434` | Alamat Ollama |
-| `AI_MODEL_NAME` | `qwen2.5:14b` | Model chat |
+| `AI_MODEL_NAME` | `qwen2.5:7b` | Model chat |
 | `AI_EMBED_MODEL` | `bge-m3` | Model embedding (ganti = wajib `--rebuild`) |
 | `AI_NUM_CTX` | `8192` | Context window per permintaan (token) |
 | `AI_MAX_ANSWER_TOKENS` | `900` | Batas panjang jawaban (token) |

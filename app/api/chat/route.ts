@@ -12,7 +12,7 @@ const ollama = createOpenAI({
 });
 
 // Must match the tag shown by `ollama list` exactly (Ollama tags are case-sensitive).
-const MODEL_NAME = process.env.AI_MODEL_NAME || 'qwen2.5:14b';
+const MODEL_NAME = process.env.AI_MODEL_NAME || 'qwen2.5:7b';
 
 // Hanya N pesan terakhir yang dikirim ke model, supaya konteks dokumen tetap muat.
 const MAX_HISTORY_MESSAGES = 10;
