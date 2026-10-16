@@ -5,6 +5,7 @@
  *   npm run ingest            -> hanya memproses file baru / yang berubah
  *   npm run ingest -- --rebuild  -> memproses ulang semuanya
  */
+import '../lib/load-env';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { extractText, getDocumentProxy } from 'unpdf';
@@ -76,7 +77,7 @@ async function main() {
   let skipped = 0;
   const warnings: string[] = [];
 
-  console.log(`Model embedding: ${RAG_CONFIG.embedModel} @ ${RAG_CONFIG.baseURL}`);
+  console.log(`Model embedding: ${RAG_CONFIG.embedModel} @ ${RAG_CONFIG.ollamaURL}`);
   console.log(`Ditemukan ${files.length} dokumen di ${docsDir}\n`);
 
   for (const [n, full] of files.entries()) {
@@ -143,7 +144,7 @@ async function main() {
       warnings.push(`${rel}: gagal diproses — ${(err as Error).message}`);
       console.log(`${prefix} — GAGAL`);
       // Bila Ollama mati, tidak ada gunanya lanjut ke file berikutnya.
-      if (/Embedding gagal|fetch failed|ECONNREFUSED/i.test((err as Error).message)) {
+      if (/Embedding gagal|Ollama/i.test((err as Error).message)) {
         console.error(`\n${(err as Error).message}`);
         process.exitCode = 1;
         return;

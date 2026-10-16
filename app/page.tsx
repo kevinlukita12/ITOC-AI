@@ -7,7 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import itocLogo from 'app/images/itoc-logo-white.png';
 import ThemeToggle from './theme-toggle';
-import type { SourceRef } from '@/lib/rag/types';
+import type { AnswerTiming, SourceRef } from '@/lib/rag/types';
 
 const STARTER_QUESTIONS = [
   'Which POJK rules cover IT governance at securities companies?',
@@ -171,6 +171,26 @@ function DocumentLibrary() {
       </ul>
     </details>
   );
+}
+
+function getTiming(m: { metadata?: unknown }): AnswerTiming | undefined {
+  return (m.metadata as { timing?: AnswerTiming } | undefined)?.timing;
+}
+
+function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+/** Counts seconds while waiting for the first words, so a slow model doesn't look frozen. */
+function ElapsedTime() {
+  const [start] = useState(() => Date.now());
+  const [now, setNow] = useState(start);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return <span className="tabular-nums">{formatDuration(now - start)}</span>;
 }
 
 function getSources(m: { metadata?: unknown }): SourceRef[] {
@@ -378,8 +398,16 @@ export default function ITOCAIPage() {
                       <Answer text={text} streaming={isLive} />
                       {text && getSources(m).length > 0 && <Sources sources={getSources(m)} />}
                       {!isLive && text && (
-                        <div className="mt-3">
+                        <div className="mt-3 flex items-center gap-3">
                           <CopyButton text={text} />
+                          {getTiming(m) && (
+                            <span
+                              className="text-xs text-faint tabular-nums"
+                              title={`First words after ${formatDuration(getTiming(m)!.firstTokenMs)}`}
+                            >
+                              Answered in {formatDuration(getTiming(m)!.totalMs)}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -391,7 +419,9 @@ export default function ITOCAIPage() {
               {status === 'submitted' && (
                 <div className="flex gap-3 md:gap-4 items-center" role="status">
                   <AssistantAvatar animated />
-                  <span className="text-sm text-muted">Looking through the regulations…</span>
+                  <span className="text-sm text-muted">
+                    Looking through the regulations… <ElapsedTime />
+                  </span>
                 </div>
               )}
 
@@ -401,8 +431,9 @@ export default function ITOCAIPage() {
                   className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-itoc-orange/30 bg-itoc-orange/5 px-4 py-3 text-sm text-ink"
                 >
                   <span>
-                    The answer couldn&apos;t be loaded. Check that the AI server is running, then
-                    try again.
+                    {error.message && error.message !== 'An error occurred.'
+                      ? error.message
+                      : "The answer couldn't be loaded. Check that Ollama is running, then try again."}
                   </span>
                   <button
                     type="button"

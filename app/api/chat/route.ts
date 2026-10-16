@@ -1,29 +1,18 @@
-import { createOpenAI } from '@ai-sdk/openai';
-import { streamText } from 'ai';
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
+import { streamChat, type ChatTurn, type OllamaStats } from '@/lib/llm/ollama';
 import { RAG_CONFIG } from '@/lib/rag/config';
 import { embedQuery } from '@/lib/rag/embed';
 import { hybridSearch, type SearchHit } from '@/lib/rag/search';
 import { loadIndex } from '@/lib/rag/store';
-import type { SourceRef } from '@/lib/rag/types';
-
-const ollama = createOpenAI({
-    baseURL: RAG_CONFIG.baseURL,
-    apiKey: 'ollama',
-});
-
-// Must match the tag shown by `ollama list` exactly (Ollama tags are case-sensitive).
-const MODEL_NAME = process.env.AI_MODEL_NAME || 'qwen2.5:7b';
-
-// Hanya N pesan terakhir yang dikirim ke model, supaya konteks dokumen tetap muat.
-const MAX_HISTORY_MESSAGES = 10;
-
-type ChatMessage = { role: 'user' | 'assistant'; content: string };
+import type { AnswerTiming, SourceRef } from '@/lib/rag/types';
 
 type IncomingMessage = {
-    role: ChatMessage['role'];
+    role: string;
     content?: unknown;
     parts?: Array<{ type: string; text?: string }>;
 };
+
+type Turn = { role: 'user' | 'assistant'; content: string };
 
 function toText(m: IncomingMessage): string {
     if (typeof m.content === 'string') return m.content;
@@ -37,8 +26,8 @@ function toText(m: IncomingMessage): string {
 }
 
 /** Pertanyaan lanjutan pendek ("kalau pasal berikutnya?") digabung dengan pertanyaan sebelumnya. */
-function buildRetrievalQuery(messages: ChatMessage[]): string {
-    const userMsgs = messages.filter((m) => m.role === 'user').map((m) => m.content.trim());
+function buildRetrievalQuery(turns: Turn[]): string {
+    const userMsgs = turns.filter((m) => m.role === 'user').map((m) => m.content.trim());
     const last = userMsgs[userMsgs.length - 1] ?? '';
     const prev = userMsgs[userMsgs.length - 2];
     const wordCount = last.split(/\s+/).filter(Boolean).length;
@@ -50,72 +39,82 @@ function formatPages(h: SearchHit): string {
     return pageStart === pageEnd ? `hal. ${pageStart}` : `hal. ${pageStart}-${pageEnd}`;
 }
 
-const BASE_PROMPT = `You are ITOC AI, an assistant for members of ITOC (IT Officer Community), IT officers at
+/**
+ * System prompt dibuat tetap (tidak berubah antar pertanyaan) supaya Ollama bisa
+ * memakai ulang hasil olahannya dari cache. Potongan dokumen ditaruh di pesan terakhir.
+ */
+const SYSTEM_PROMPT = `You are ITOC AI, an assistant for members of ITOC (IT Officer Community), IT officers at
 securities companies, banks, and other capital market institutions in Indonesia.
-You answer questions about regulations such as POJK, SEOJK, Pedoman BOFIS, Pedoman DRC,
+You answer questions about regulations such as POJK, SEOJK, Pedoman BOFIS, Pedoman BCP/DRC,
 Pedoman Remote Trading, Pedoman Fasilitas Pesanan Langsung (DMA), and IDX/KSEI/KPEI rules.
 
 Language: always reply in the same language the user writes in (Bahasa Indonesia or English).
-Never reply in Chinese unless the user writes in Chinese.`;
+Never reply in Chinese unless the user writes in Chinese.
 
-function buildSystemPrompt(hits: SearchHit[], indexReady: boolean, docCount: number): string {
-    if (!indexReady) {
-        return `${BASE_PROMPT}
+Each question comes with numbered excerpts from the official documents, inside <excerpts> tags.
+Rules:
+1. Base your answer on the excerpts. Cite claims with the excerpt number in square brackets, e.g. [1] or [2][3],
+   and mention the document name and Pasal/section when shown.
+2. If the excerpts do not contain the answer, say so plainly. You may add general knowledge only if you
+   label it clearly as not coming from the documents.
+3. Never invent article numbers, regulation numbers, deadlines, or figures.
+4. Be concise: start with the direct answer, then the key points. Keep it under about 250 words
+   unless the user asks for detail or a complete list.`;
 
-No regulation documents have been loaded yet. Answer from general knowledge, but start by saying
-clearly that the document library is empty, so the answer is not based on the official text and
-must be verified against the official OJK or IDX source.`;
-    }
+const NO_DOCS_NOTE =
+    'No regulation documents have been loaded yet. Say so at the start, answer briefly from general knowledge, and advise checking the official OJK or IDX source.';
 
-    const context = hits
-        .map((h, i) => {
-            const head = [h.chunk.title, h.chunk.heading, formatPages(h)].filter(Boolean).join(' | ');
-            return `[${i + 1}] ${head}\n${h.chunk.text}`;
-        })
-        .join('\n\n---\n\n');
+function buildQuestionWithExcerpts(question: string, hits: SearchHit[], indexReady: boolean): string {
+    if (!indexReady) return `${NO_DOCS_NOTE}\n\nQuestion: ${question}`;
 
-    return `${BASE_PROMPT}
+    const excerpts = hits.length
+        ? hits
+              .map((h, i) => {
+                  const head = [h.chunk.title, h.chunk.heading, formatPages(h)].filter(Boolean).join(' | ');
+                  return `[${i + 1}] ${head}\n${h.chunk.text}`;
+              })
+              .join('\n\n---\n\n')
+        : '(no relevant excerpts found)';
 
-You have access to a library of ${docCount} official regulation documents. For this question, the
-most relevant excerpts were retrieved and are shown below between <excerpts> tags, each numbered.
+    return `<excerpts>\n${excerpts}\n</excerpts>\n\nQuestion: ${question}`;
+}
 
-Rules for answering:
-1. Base your answer on the excerpts. Quote or paraphrase the specific requirements they state.
-2. Cite every claim taken from an excerpt with its number in square brackets, e.g. [1] or [2][3].
-   Mention the document name and, when shown, the Pasal/section, so the reader can find it.
-3. If the excerpts do not contain the answer, say plainly that you could not find it in the loaded
-   documents. You may then add general knowledge, but label it clearly as not coming from the
-   documents and advise checking the official source.
-4. Never invent article numbers, regulation numbers, deadlines, or figures that are not in the excerpts.
-5. If excerpts from different documents conflict or apply to different entities, point that out.
-6. Be concise and well structured. Use lists or tables when comparing requirements.
+const ns = (n?: number) => (n ?? 0) / 1e9; // nanodetik -> detik
 
-<excerpts>
-${context || '(no relevant excerpts found)'}
-</excerpts>`;
+function describe(t: AnswerTiming, s: OllamaStats): string {
+    const parts = [
+        `cari dokumen ${(t.retrievalMs / 1000).toFixed(1)} dtk`,
+        s.load_duration && ns(s.load_duration) > 0.5 ? `muat model ${ns(s.load_duration).toFixed(1)} dtk` : '',
+        `baca ${t.promptTokens} token ${ns(s.prompt_eval_duration).toFixed(1)} dtk`,
+        `tulis ${t.answerTokens} token ${ns(s.eval_duration).toFixed(1)} dtk (${t.tokensPerSec.toFixed(1)} token/dtk)`,
+        `total ${(t.totalMs / 1000).toFixed(1)} dtk`,
+    ];
+    return parts.filter(Boolean).join(' | ');
 }
 
 export async function POST(req: Request) {
-    const { messages } = await req.json();
+    const started = Date.now();
+    const { messages } = (await req.json()) as { messages: IncomingMessage[] };
 
-    const formattedMessages: ChatMessage[] = (messages as IncomingMessage[])
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
+    const turns: Turn[] = messages
+        .filter((m): m is IncomingMessage & { role: Turn['role'] } => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role, content: toText(m) }))
-        .filter((m) => m.content.trim() !== '')
-        .slice(-MAX_HISTORY_MESSAGES);
+        .filter((m) => m.content.trim() !== '');
+
+    const question = turns[turns.length - 1]?.content ?? '';
 
     // 1) Cari potongan dokumen yang relevan.
     const index = await loadIndex();
     let hits: SearchHit[] = [];
 
     if (index && index.chunks.length) {
-        const query = buildRetrievalQuery(formattedMessages);
+        const query = buildRetrievalQuery(turns);
         let queryVector: Float32Array;
         try {
             queryVector = await embedQuery(query);
         } catch (err) {
             // Tanpa embedding, pencarian kata kunci (BM25) tetap jalan.
-            console.error('[ITOC RAG] Embedding pertanyaan gagal, pakai pencarian kata kunci saja:', err);
+            console.error('[ITOC AI] Embedding pertanyaan gagal, pakai pencarian kata kunci saja:', err);
             queryVector = new Float32Array(index.chunks[0].vector.length);
         }
         hits = hybridSearch(index, query, queryVector, {
@@ -123,6 +122,7 @@ export async function POST(req: Request) {
             maxChars: RAG_CONFIG.maxContextChars,
         });
     }
+    const retrievalMs = Date.now() - started;
 
     const sources: SourceRef[] = hits.map((h, i) => ({
         n: i + 1,
@@ -133,17 +133,60 @@ export async function POST(req: Request) {
         pageEnd: h.chunk.pageEnd,
     }));
 
-    // 2) Jawab dengan potongan tadi sebagai konteks.
-    const result = await streamText({
-        // .chat() targets Ollama's /v1/chat/completions endpoint, its most stable OpenAI-compatible route.
-        model: ollama.chat(MODEL_NAME),
-        temperature: 0.2, // rendah = jawaban lebih konsisten dan setia pada teks peraturan
-        system: buildSystemPrompt(hits, Boolean(index?.chunks.length), index?.documents.length ?? 0),
-        messages: formattedMessages,
+    // 2) Susun pesan: riwayat singkat + pertanyaan terakhir beserta potongan dokumen.
+    const history: ChatTurn[] = turns
+        .slice(0, -1)
+        .slice(-RAG_CONFIG.historyMessages)
+        .map((m) =>
+            m.role === 'assistant' && m.content.length > RAG_CONFIG.historyAnswerChars
+                ? { ...m, content: `${m.content.slice(0, RAG_CONFIG.historyAnswerChars)}…` }
+                : m,
+        );
+
+    const llmMessages: ChatTurn[] = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...history,
+        { role: 'user', content: buildQuestionWithExcerpts(question, hits, Boolean(index?.chunks.length)) },
+    ];
+
+    // 3) Alirkan jawaban ke browser.
+    const stream = createUIMessageStream({
+        onError: (err) =>
+            err instanceof Error ? err.message : 'Terjadi kesalahan saat menghubungi AI.',
+        execute: async ({ writer }) => {
+            writer.write({ type: 'start', messageMetadata: { sources } });
+            writer.write({ type: 'text-start', id: 'answer' });
+
+            let firstTokenMs = 0;
+            let stats: OllamaStats = {};
+
+            // req.signal: tombol Stop di browser ikut menghentikan Ollama, jadi tidak membuang waktu.
+            for await (const ev of streamChat(llmMessages, req.signal)) {
+                if (ev.type === 'delta') {
+                    if (!firstTokenMs) firstTokenMs = Date.now() - started;
+                    writer.write({ type: 'text-delta', id: 'answer', delta: ev.text });
+                } else {
+                    stats = ev.stats;
+                }
+            }
+
+            writer.write({ type: 'text-end', id: 'answer' });
+
+            const timing: AnswerTiming = {
+                totalMs: Date.now() - started,
+                firstTokenMs,
+                retrievalMs,
+                promptTokens: stats.prompt_eval_count ?? 0,
+                answerTokens: stats.eval_count ?? 0,
+                tokensPerSec: stats.eval_duration ? (stats.eval_count ?? 0) / ns(stats.eval_duration) : 0,
+            };
+            if (stats.eval_count) console.log(`[ITOC AI] ${describe(timing, stats)}`);
+
+            writer.write({ type: 'finish', finishReason: 'stop', messageMetadata: { timing } });
+        },
     });
 
-    // Daftar sumber dikirim sebagai metadata pesan, ditampilkan di bawah jawaban.
-    return result.toUIMessageStreamResponse({
-        messageMetadata: ({ part }) => (part.type === 'start' ? { sources } : undefined),
-    });
+    // keepAliveMs: kirim sinyal kecil berkala selama model masih "membaca", supaya koneksi
+    // tidak diputus antivirus/proxy saat menunggu lama sebelum kata pertama muncul.
+    return createUIMessageStreamResponse({ stream, keepAliveMs: 15_000 });
 }

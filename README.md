@@ -13,7 +13,7 @@ tepat di halaman yang dikutip.
    `data/rag-index.json`. Ini tidak perlu di lakukan berkali-kali, hanya saat ada dokumen baru saja.
 2. Saat member bertanya, server mencari potongan yang paling relevan dengan dua cara sekaligus:
    berdasarkan makna (embedding) dan kata kunci persis (mis. "Pasal 12", "RTO", "POJK 11/2022").
-3. Potongan terbaik (default 4) diberikan ke model chat (`qwen2.5:7b`) beserta instruksi untuk
+3. Potongan terbaik (default 4) diberikan ke model chat (`qwen2.5:3b`) beserta instruksi untuk
    menjawab hanya dari dokumen dan mencantumkan nomor sumber, mis. [1], [2].
 
 ## Yang perlu di-install
@@ -22,7 +22,7 @@ tepat di halaman yang dikutip.
 | --- | --- | --- |
 | **Node.js** (versi LTS) | Wajib | Menjalankan aplikasi. `npm` otomatis ikut terpasang bersama Node.js. |
 | **Ollama** | Wajib | Menjalankan model AI di komputer sendiri, tanpa internet dan tanpa biaya API. |
-| Model **qwen2.5:7b** dan **bge-m3** | Wajib | Model chat dan model pembaca dokumen. Diunduh lewat Ollama. |
+| Model **qwen2.5:3b** dan **bge-m3** | Wajib | Model chat dan model pembaca dokumen. Diunduh lewat Ollama. |
 | Next.js, AI SDK, tsx, unpdf | Tidak perlu di-install manual | Semuanya otomatis terpasang saat menjalankan `npm install` (langkah 4). |
 | VS Code | Opsional | Hanya kalau ingin mengedit kode. Tidak dibutuhkan untuk menjalankan aplikasi. |
 | Git | Opsional | Hanya kalau proyek disimpan di GitHub/GitLab. |
@@ -64,18 +64,18 @@ ollama --version
 
 ### 3. Unduh model AI
 
-Butuh koneksi internet. Total unduhan sekitar 6 GB, jadi bisa makan waktu.
+Butuh koneksi internet. Total unduhan sekitar 3 GB, jadi bisa makan waktu.
 
 ```powershell
-ollama pull qwen2.5:7b
+ollama pull qwen2.5:3b
 ollama pull bge-m3
 ```
 
 Cek hasilnya dengan `ollama list`. Kedua model harus muncul di daftar.
 
-Model `qwen2.5:7b` adalah pilihan seimbang antara kecepatan dan kualitas. Kalau komputer kuat
-(GPU NVIDIA dengan VRAM 12 GB ke atas), `qwen2.5:14b` memberi jawaban lebih baik. Kalau komputer
-lemah, `qwen2.5:3b` lebih cepat.
+Model `qwen2.5:3b` dipilih supaya cepat di laptop tanpa GPU. Kalau jawabannya kurang tepat dan
+komputer cukup kuat, `qwen2.5:7b` memberi jawaban lebih baik tapi kira-kira dua kali lebih lambat.
+Dengan GPU NVIDIA (VRAM 12 GB ke atas), `qwen2.5:14b` memberi jawaban terbaik.
 
 ### 4. Siapkan proyek
 
@@ -97,7 +97,7 @@ copy .env.example .env.local
 ```
 
 4. Buka `.env.local` dengan Notepad dan pastikan `AI_MODEL_NAME` sama dengan model yang
-   diunduh di langkah 3, misalnya `AI_MODEL_NAME=qwen2.5:7b`.
+   diunduh di langkah 3, misalnya `AI_MODEL_NAME=qwen2.5:3b`.
 
 Context window Ollama tidak perlu diatur, karena aplikasi sudah mengirim `num_ctx` (default 8192)
 di setiap permintaan. Kalau sebelumnya Anda men-set `OLLAMA_CONTEXT_LENGTH=16384`, sebaiknya
@@ -130,6 +130,7 @@ dipakai. Untuk mematikan, tekan `Ctrl + C` di jendela tersebut.
 | `'node'` / `'npm'` / `'ollama'` `is not recognized` | Terminal dibuka sebelum instalasi selesai | Tutup lalu buka lagi PowerShell. Kalau masih, install ulang Node.js atau Ollama. |
 | `'tsx' is not recognized` | `npm install` belum dijalankan di folder proyek | Masuk ke folder proyek, jalankan `npm install`. |
 | `model "..." not found` | Model belum diunduh, atau nama di `.env.local` salah ketik | Jalankan `ollama list` dan samakan nama di `.env.local` persis dengan yang muncul. |
+| AI tidak menjawab atau terlalu lama | Bermacam-macam | Jalankan `npm run diagnose` dan ikuti sarannya. |
 | `Port 3000 is in use` | Aplikasi lain memakai port 3000 | Jalankan `npm run dev -- -p 3001`, lalu buka http://localhost:3001 |
 
 ## Menambah dokumen
@@ -168,6 +169,15 @@ File `.txt` dan `.md` juga didukung.
 
 ## Kecepatan menjawab
 
+Untuk memeriksa semuanya sekaligus (Ollama berjalan, model terpasang, RAM, CPU atau GPU, dan
+kecepatan nyata di komputer ini), jalankan:
+
+```powershell
+npm run diagnose
+```
+
+Hasilnya diakhiri dengan saran yang sesuai untuk komputer tersebut.
+
 Setiap kali selesai menjawab, terminal `npm run dev` menampilkan baris seperti ini:
 
 ```
@@ -183,14 +193,20 @@ Baca bagian yang paling besar untuk tahu apa yang perlu diperbaiki:
 | `baca ... dtk` | Model membaca potongan dokumen (prompt) | Turunkan `RAG_TOP_K` ke 3; aktifkan `OLLAMA_FLASH_ATTENTION=1` bila pakai GPU NVIDIA |
 | `tulis ... token/dtk` di bawah 5 | Model menulis jawaban lambat, biasanya karena jalan di CPU | Pakai model yang lebih kecil (lihat di bawah) atau komputer dengan GPU |
 
-**Ganti model chat** adalah cara paling ampuh. Model 3B kira-kira dua kali lebih cepat dari 7B.
-Karena jawabannya diambil dari potongan dokumen, model yang lebih kecil umumnya tetap cukup baik:
+**Model chat** paling menentukan kecepatan. Bawaannya sudah `qwen2.5:3b`, yang paling cepat.
+Kalau kualitas jawaban kurang dan waktunya masih longgar, naikkan ke `qwen2.5:7b`:
 
 ```powershell
-ollama pull qwen2.5:3b
+ollama pull qwen2.5:7b
 ```
 
-Lalu di `.env.local` tulis `AI_MODEL_NAME=qwen2.5:3b` dan restart `npm run dev`.
+Lalu di `.env.local` tulis `AI_MODEL_NAME=qwen2.5:7b` dan restart `npm run dev`.
+
+**Laptop dengan prosesor Intel Core Ultra** sebenarnya punya GPU terintegrasi (Intel Arc). Ollama
+versi terbaru bisa memakainya otomatis. Update Ollama dari https://ollama.com/download, lalu
+saat AI sedang menjawab jalankan `ollama ps` dan lihat kolom PROCESSOR. Colok juga charger dan
+pilih Power mode **Best performance** di Settings Windows, karena mode hemat daya memperlambat
+prosesor dengan drastis.
 
 Pengaturan Ollama yang membantu bila memakai GPU NVIDIA (PowerShell, lalu restart Ollama dari tray):
 
@@ -214,7 +230,7 @@ Salin `.env.example` menjadi `.env.local` lalu ubah sesuai kebutuhan:
 | Variabel | Default | Keterangan |
 | --- | --- | --- |
 | `AI_BASE_URL` | `http://localhost:11434` | Alamat Ollama |
-| `AI_MODEL_NAME` | `qwen2.5:7b` | Model chat |
+| `AI_MODEL_NAME` | `qwen2.5:3b` | Model chat |
 | `AI_EMBED_MODEL` | `bge-m3` | Model embedding (ganti = wajib `--rebuild`) |
 | `AI_NUM_CTX` | `8192` | Context window per permintaan (token) |
 | `AI_MAX_ANSWER_TOKENS` | `900` | Batas panjang jawaban (token) |
@@ -236,6 +252,8 @@ lib/rag/embed.ts                Pemanggil embedding Ollama
 lib/rag/search.ts               Pencarian hybrid (makna + kata kunci)
 lib/rag/store.ts                Simpan/muat index (otomatis reload)
 lib/llm/ollama.ts               Pemanggil Ollama (streaming, keep_alive, num_ctx)
+lib/llm/http.ts                 Koneksi ke Ollama tanpa batas waktu 5 menit
+scripts/diagnose.ts             Pemeriksaan & uji kecepatan (npm run diagnose)
 instrumentation.ts              Memuat model saat server mulai
 app/api/chat/route.ts           Endpoint chat dengan konteks dokumen
 app/api/documents/route.ts      Daftar dokumen
